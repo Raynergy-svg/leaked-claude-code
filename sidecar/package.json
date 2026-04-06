@@ -1,0 +1,20 @@
+{
+  "name": "aura-sidecar",
+  "version": "0.1.0",
+  "description": "Node.js transport sidecar for Aura — WebSocket/SSE bridge to Python process",
+  "type": "module",
+  "main": "dist/auraBridge.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/auraBridge.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  }
+}
