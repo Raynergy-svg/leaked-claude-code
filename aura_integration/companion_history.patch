@@ -1,0 +1,262 @@
+diff --git a/src/aura/cli/companion.py b/src/aura/cli/companion.py
+index ef6162f..a44579d 100644
+--- a/src/aura/cli/companion.py
++++ b/src/aura/cli/companion.py
+@@ -35,6 +35,9 @@ from src.aura.bridge.signals import FeedbackBridge, OutcomeSignal
+ from src.aura.patterns.engine import PatternEngine
+ from src.aura.persistence import atomic_write_json  # Fix M-01: needed for atomic onboarding profile write
+ from src.aura.cli.brand import get_brand, THEMES, RESET as BRAND_RESET, BOLD as BRAND_BOLD
++from src.aura.persistence.types import SessionEvent, SessionSummary
++from src.aura.persistence.session_history import SessionHistoryWriter, SessionHistoryReader
++from src.aura.persistence.session_index import SessionIndex
+ from src.aura.cli.sprites.companion import roll as sprite_roll
+ from src.aura.cli.sprites.renderer import render_sprite, render_face, render_sprite_colored
+ from src.aura.cli.sprites.types import RARITY_STARS
+@@ -165,6 +168,16 @@ class AuraCompanion:
+         except Exception as e:
+             logger.debug(f"Evolution engine not available: {e}")
+ 
++        # Session history persistence
++        history_dir = aura_root / "history"
++        history_dir.mkdir(parents=True, exist_ok=True)
++        self._history_writer = SessionHistoryWriter(history_dir=history_dir)
++        self._history_reader = SessionHistoryReader(history_dir=history_dir)
++        self._session_index = SessionIndex(
++            db_path=aura_root / "session_index.db"
++        )
++        self._session_start_readiness: Optional[float] = None
++
+     def _needs_onboarding(self) -> bool:
+         """Check if self-model is empty and needs onboarding."""
+         stats = self.graph.get_stats()
+@@ -402,6 +415,23 @@ class AuraCompanion:
+ 
+         # Compute initial readiness
+         self._update_readiness()
++
++        # Record session start in index
++        self._session_start_readiness = (
++            self._latest_readiness.readiness_score if self._latest_readiness else None
++        )
++        try:
++            self._session_index.upsert_session(SessionSummary(
++                session_id=self._conversation_id,
++                start_time=datetime.now(timezone.utc).isoformat(),
++                end_time=None,
++                message_count=0,
++                readiness_start=self._session_start_readiness,
++                readiness_end=None,
++                emotional_arc="stable",
++            ))
++        except Exception as e:
++            logger.debug(f"Session index write failed: {e}")
+         print()
+ 
+     def process_input(self, user_input: str) -> str:
+@@ -565,6 +595,36 @@ class AuraCompanion:
+         self._message_history.append({"role": "user", "content": user_input})
+         self._message_history.append({"role": "assistant", "content": response})
+ 
++        # Persist session events (non-critical — never crash the session)
++        try:
++            self._history_writer.append_event(SessionEvent(
++                id=str(uuid.uuid4()),
++                type="user_message",
++                timestamp=datetime.now(timezone.utc).isoformat(),
++                session_id=self._conversation_id,
++                data={"text": user_input},
++            ))
++            self._history_writer.append_event(SessionEvent(
++                id=str(uuid.uuid4()),
++                type="aura_response",
++                timestamp=datetime.now(timezone.utc).isoformat(),
++                session_id=self._conversation_id,
++                data={"text": response},
++            ))
++            if readiness:
++                self._history_writer.append_event(SessionEvent(
++                    id=str(uuid.uuid4()),
++                    type="readiness_update",
++                    timestamp=datetime.now(timezone.utc).isoformat(),
++                    session_id=self._conversation_id,
++                    data={
++                        "score": readiness.readiness_score,
++                        "emotional_state": signals.emotional_state if signals else "unknown",
++                    },
++                ))
++        except Exception as e:
++            logger.debug(f"Session history write failed: {e}")
++
+         # US-262: Cap message history to prevent unbounded growth
+         if len(self._message_history) > self.MAX_MESSAGE_HISTORY:
+             self._message_history = self._message_history[-self.MAX_MESSAGE_HISTORY:]
+@@ -971,6 +1031,10 @@ class AuraCompanion:
+             return self._cmd_theme(cmd)
+         elif cmd == "/sprite":
+             return self._cmd_sprite()
++        elif cmd.startswith("/history"):
++            return self._cmd_history(cmd)
++        elif cmd.startswith("/replay"):
++            return self._cmd_replay(cmd)
+         elif cmd == "/help":
+             return self._cmd_help()
+         elif cmd == "/quit":
+@@ -979,6 +1043,108 @@ class AuraCompanion:
+             brand = get_brand()
+             return f"{brand.c('warning')}Unknown command: {cmd}{BRAND_RESET}\n\n  Type {brand.c('primary')}/help{BRAND_RESET} for all available commands."
+ 
++    def _cmd_history(self, cmd: str) -> str:
++        """Show recent session history."""
++        brand = get_brand()
++        p = brand.c("primary")
++        s = brand.c("secondary")
++        d = brand.c("text_dim")
++        rst = BRAND_RESET
++
++        parts = cmd.strip().split()
++        limit = 10
++        if len(parts) > 1:
++            try:
++                limit = int(parts[1])
++            except ValueError:
++                pass
++
++        sessions = self._session_index.list_sessions(limit=limit)
++        if not sessions:
++            return f"{d}No session history yet. Start chatting to build history.{rst}"
++
++        lines = [brand.render_header("Session History", style="heavy"), ""]
++        for sess in sessions:
++            # Format readiness as bar
++            r_start = f"{sess.readiness_start:.0f}" if sess.readiness_start is not None else "?"
++            r_end = f"{sess.readiness_end:.0f}" if sess.readiness_end is not None else "?"
++            arc_icon = {"improving": "+", "declining": "-", "stable": "=", "volatile": "~"}.get(
++                sess.emotional_arc, "?"
++            )
++            status = f"{d}ended{rst}" if sess.end_time else f"{s}active{rst}"
++            lines.append(
++                f"  {p}{sess.session_id}{rst}  "
++                f"{d}{sess.message_count} msgs{rst}  "
++                f"readiness {r_start}→{r_end} [{arc_icon}]  "
++                f"{status}"
++            )
++        lines.append("")
++        lines.append(f"  {d}Use /replay <session_id> to review a session.{rst}")
++        return "\n".join(lines)
++
++    def _cmd_replay(self, cmd: str) -> str:
++        """Replay a session's readiness trajectory."""
++        brand = get_brand()
++        p = brand.c("primary")
++        s = brand.c("secondary")
++        d = brand.c("text_dim")
++        w = brand.c("warning")
++        rst = BRAND_RESET
++
++        parts = cmd.strip().split()
++        if len(parts) < 2:
++            # Default to current session
++            session_id = self._conversation_id
++        else:
++            session_id = parts[1]
++
++        # Try to find the session (partial match)
++        sessions = self._history_reader.list_sessions()
++        matched = [s for s in sessions if session_id in s]
++        if not matched:
++            return f"{w}Session not found: {session_id}{rst}\n  Use /history to see available sessions."
++        session_id = matched[0]  # Use first match
++
++        page = self._history_reader.fetch_latest(session_id, limit=200)
++        if not page or not page.events:
++            return f"{d}No events in session {session_id}.{rst}"
++
++        lines = [brand.render_header(f"Replay: {session_id}", style="heavy"), ""]
++
++        readiness_points = []
++        for event in page.events:
++            if event.type == "user_message":
++                text = event.data.get("text", "")[:80]
++                lines.append(f"  {s}You:{rst} {text}")
++            elif event.type == "aura_response":
++                text = event.data.get("text", "")[:80]
++                lines.append(f"  {p}Aura:{rst} {text}")
++            elif event.type == "readiness_update":
++                score = event.data.get("score", 0)
++                readiness_points.append(score)
++                bar_len = int(score / 5)
++                bar = "█" * bar_len + "░" * (20 - bar_len)
++                lines.append(f"  {d}  readiness: {bar} {score:.0f}{rst}")
++
++        if readiness_points:
++            lines.append("")
++            lines.append(f"  {s}Readiness trajectory:{rst}")
++            # Simple sparkline
++            mn, mx = min(readiness_points), max(readiness_points)
++            spark_chars = "▁▂▃▄▅▆▇█"
++            sparkline = ""
++            for pt in readiness_points:
++                if mx == mn:
++                    idx = 4
++                else:
++                    idx = int((pt - mn) / (mx - mn) * 7)
++                sparkline += spark_chars[idx]
++            lines.append(f"  {p}{sparkline}{rst}  ({mn:.0f} → {mx:.0f})")
++
++        lines.append("")
++        lines.append(f"  {d}{len(page.events)} events, has_more={page.has_more}{rst}")
++        return "\n".join(lines)
++
+     def _get_sprite_user_id(self) -> str:
+         """Get a stable user ID for sprite generation."""
+         # Use the trader's person node if onboarded, otherwise a default
+@@ -1096,6 +1262,10 @@ class AuraCompanion:
+                 ("/weights", "Component weights"),
+                 ("/granularity", "Granularity controls"),
+             ],
++            "History": [
++                ("/history", "Recent session history  ·  /history <N> for more"),
++                ("/replay", "Replay current session  ·  /replay <session_id>"),
++            ],
+             "System": [
+                 ("/sprite", "Show your companion sprite and stats"),
+                 ("/theme", "List themes  ·  /theme <name> to switch"),
+@@ -2333,4 +2503,38 @@ class AuraCompanion:
+             messages=self._message_history[-20:],  # Keep last 20 messages
+         )
+ 
++        # Update session index with final state
++        try:
++            msg_count = len(self._message_history) // 2  # user+assistant pairs
++            readiness_end = (
++                self._latest_readiness.readiness_score if self._latest_readiness else None
++            )
++            # Determine emotional arc from readiness trajectory
++            emotional_arc = "stable"
++            if self._session_start_readiness is not None and readiness_end is not None:
++                delta = readiness_end - self._session_start_readiness
++                if delta > 10:
++                    emotional_arc = "improving"
++                elif delta < -10:
++                    emotional_arc = "declining"
++                elif abs(delta) <= 10 and msg_count > 3:
++                    emotional_arc = "stable"
++
++            self._session_index.upsert_session(SessionSummary(
++                session_id=self._conversation_id,
++                start_time=datetime.now(timezone.utc).isoformat(),
++                end_time=datetime.now(timezone.utc).isoformat(),
++                message_count=msg_count,
++                readiness_start=self._session_start_readiness,
++                readiness_end=readiness_end,
++                emotional_arc=emotional_arc,
++            ))
++        except Exception as e:
++            logger.debug(f"Session index update failed: {e}")
++
++        # Close session index and graph
++        try:
++            self._session_index.close()
++        except Exception:
++            pass
+         self.graph.close()
