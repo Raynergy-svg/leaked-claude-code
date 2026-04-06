@@ -1,0 +1,110 @@
+diff --git a/src/aura/cli/companion.py b/src/aura/cli/companion.py
+index a94dc5b..ef6162f 100644
+--- a/src/aura/cli/companion.py
++++ b/src/aura/cli/companion.py
+@@ -35,6 +35,9 @@ from src.aura.bridge.signals import FeedbackBridge, OutcomeSignal
+ from src.aura.patterns.engine import PatternEngine
+ from src.aura.persistence import atomic_write_json  # Fix M-01: needed for atomic onboarding profile write
+ from src.aura.cli.brand import get_brand, THEMES, RESET as BRAND_RESET, BOLD as BRAND_BOLD
++from src.aura.cli.sprites.companion import roll as sprite_roll
++from src.aura.cli.sprites.renderer import render_sprite, render_face, render_sprite_colored
++from src.aura.cli.sprites.types import RARITY_STARS
+ 
+ # Phase 3 prediction models (lazy import — may not be available)
+ try:
+@@ -366,6 +369,24 @@ class AuraCompanion:
+ 
+         brand = get_brand()
+ 
++        # Show companion sprite
++        try:
++            user_id = self._get_sprite_user_id()
++            r = sprite_roll(user_id)
++            theme = brand._theme if hasattr(brand, '_theme') else None
++            if theme:
++                lines = render_sprite_colored(r.bones, frame=0, theme=theme)
++            else:
++                lines = render_sprite(r.bones, frame=0)
++            for line in lines:
++                print(f"  {line}")
++            stars = RARITY_STARS.get(r.bones.rarity, "")
++            face = render_face(r.bones)
++            print(f"  {brand.c('text_dim')}{r.bones.species} {face}  {stars}  {r.bones.rarity}{BRAND_RESET}")
++            print()
++        except Exception as e:
++            logger.debug(f"Sprite rendering skipped: {e}")
++
+         # Show bridge status if Buddy is running
+         bridge_status = self.bridge.get_bridge_status()
+         if bridge_status["outcome_signal"]["available"]:
+@@ -948,6 +969,8 @@ class AuraCompanion:
+             return self._cmd_fatigue()
+         elif cmd.startswith("/theme"):
+             return self._cmd_theme(cmd)
++        elif cmd == "/sprite":
++            return self._cmd_sprite()
+         elif cmd == "/help":
+             return self._cmd_help()
+         elif cmd == "/quit":
+@@ -956,6 +979,53 @@ class AuraCompanion:
+             brand = get_brand()
+             return f"{brand.c('warning')}Unknown command: {cmd}{BRAND_RESET}\n\n  Type {brand.c('primary')}/help{BRAND_RESET} for all available commands."
+ 
++    def _get_sprite_user_id(self) -> str:
++        """Get a stable user ID for sprite generation."""
++        # Use the trader's person node if onboarded, otherwise a default
++        try:
++            stats = self.graph.get_stats()
++            nodes = stats.get("nodes_by_type", {})
++            if nodes.get("person", 0) > 0:
++                return "person_trader"
++        except Exception:
++            pass
++        return "aura-default-user"
++
++    def _cmd_sprite(self) -> str:
++        """Show the companion sprite with stats."""
++        brand = get_brand()
++        user_id = self._get_sprite_user_id()
++        r = sprite_roll(user_id)
++        b = r.bones
++
++        theme = brand._theme if hasattr(brand, '_theme') else None
++        if theme:
++            lines = render_sprite_colored(b, frame=0, theme=theme)
++        else:
++            lines = render_sprite(b, frame=0)
++
++        stars = RARITY_STARS.get(b.rarity, "")
++        p = brand.c("primary")
++        s = brand.c("secondary")
++        d = brand.c("text_dim")
++        rst = BRAND_RESET
++
++        output = [brand.render_header("Companion Sprite", style="heavy")]
++        output.append("")
++        for line in lines:
++            output.append(f"    {line}")
++        output.append("")
++        output.append(f"    {p}{b.species}{rst}  {render_face(b)}  {stars}  {d}{b.rarity}{rst}")
++        if b.shiny:
++            output.append(f"    {brand.c('warning')}✨ SHINY ✨{rst}")
++        output.append("")
++        output.append(f"    {s}Stats:{rst}")
++        for stat_name, val in b.stats.items():
++            bar = "█" * (val // 5) + "░" * (20 - val // 5)
++            output.append(f"    {d}{stat_name:<12}{rst} {bar} {val}")
++        output.append("")
++        return "\n".join(output)
++
+     def _cmd_theme(self, cmd: str) -> str:
+         """Handle /theme command — list or switch themes."""
+         brand = get_brand()
+@@ -1027,6 +1097,7 @@ class AuraCompanion:
+                 ("/granularity", "Granularity controls"),
+             ],
+             "System": [
++                ("/sprite", "Show your companion sprite and stats"),
+                 ("/theme", "List themes  ·  /theme <name> to switch"),
+                 ("/help", "This help screen"),
+                 ("/quit", "End session"),
