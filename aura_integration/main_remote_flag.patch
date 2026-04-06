@@ -1,0 +1,88 @@
+diff --git a/src/aura/cli/main.py b/src/aura/cli/main.py
+index 734ad21..9e1f2b7 100644
+--- a/src/aura/cli/main.py
++++ b/src/aura/cli/main.py
+@@ -126,6 +126,12 @@ def main():
+                         help="Set color theme (eve, midnight, aurora, ember, sakura, void, solaris, claude)")
+     parser.add_argument("--db-path", type=str, default=None, help="Path to self-model database")
+     parser.add_argument("--bridge-dir", type=str, default=None, help="Path to bridge signal directory")
++    parser.add_argument("--remote", action="store_true",
++                        help="Enable remote transport (starts WebSocket sidecar for IDE/web connections)")
++    parser.add_argument("--ws-port", type=int, default=8765,
++                        help="WebSocket port for remote connections (default: 8765)")
++    parser.add_argument("--auth-token", type=str, default=None,
++                        help="Auth token for remote WebSocket connections")
+     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+     args = parser.parse_args()
+ 
+@@ -161,6 +167,51 @@ def main():
+ 
+     companion = AuraCompanion(db_path=db_path, bridge_dir=bridge_dir)
+ 
++    # Remote transport (optional — sidecar for IDE/web connections)
++    remote_transport = None
++    if args.remote:
++        try:
++            from src.aura.transport.remote import RemoteTransport
++            from src.aura.protocol.messages import MessageType, create_message
++
++            def on_remote_message(msg):
++                """Handle messages from remote clients."""
++                if msg.type == MessageType.USER_MESSAGE:
++                    text = msg.data.get("text", "")
++                    if text:
++                        response = companion.process_input(text)
++                        # Send response back via transport
++                        resp_msg = create_message(
++                            MessageType.AURA_RESPONSE,
++                            {"text": response},
++                        )
++                        if remote_transport:
++                            remote_transport.write(resp_msg)
++
++            remote_transport = RemoteTransport(
++                socket_path="/tmp/aura-sidecar.sock",
++                on_message=on_remote_message,
++            )
++            remote_transport._sidecar.ws_port = args.ws_port
++            if args.auth_token:
++                remote_transport._sidecar.auth_token = args.auth_token
++
++            if remote_transport.start():
++                brand.print_info(
++                    f"Remote transport active — WebSocket on port {args.ws_port}"
++                )
++                if args.auth_token:
++                    brand.print_dim("  Auth token required for connections")
++            else:
++                brand.print_dim(
++                    "Remote transport unavailable (Node.js not found). "
++                    "Running in local CLI mode."
++                )
++                remote_transport = None
++        except Exception as e:
++            logger.warning(f"Remote transport failed to start: {e}")
++            brand.print_dim(f"Remote transport unavailable: {e}")
++
+     if args.status:
+         # Fix M-02: Previously no try/except — a corrupted bridge file caused an unhandled crash.
+         import json
+@@ -175,10 +226,14 @@ def main():
+     brand.print_startup_banner()
+     print()
+ 
+-    if args.demo:
+-        run_demo(companion)
+-    else:
+-        run_interactive(companion)
++    try:
++        if args.demo:
++            run_demo(companion)
++        else:
++            run_interactive(companion)
++    finally:
++        if remote_transport:
++            remote_transport.close()
+ 
+ 
+ if __name__ == "__main__":
