@@ -1,0 +1,35 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 36ef2a8..43c7ea4 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -6,12 +6,21 @@ build-backend = "setuptools.build_meta"
+ name = "aura"
+ version = "0.1.0"
+ description = "Aura — Human Intelligence Engine for the Buddy+Aura trading system"
++readme = "CLAUDE.md"
++license = {text = "MIT"}
+ requires-python = ">=3.10"
+ dependencies = []
++classifiers = [
++    "Programming Language :: Python :: 3",
++    "Programming Language :: Python :: 3.10",
++    "Programming Language :: Python :: 3.11",
++    "Programming Language :: Python :: 3.12",
++    "Operating System :: OS Independent",
++]
+ 
+ [project.optional-dependencies]
+ ml = ["numpy", "statsmodels", "nltk"]
+-dev = ["pytest", "pytest-cov"]
++dev = ["pytest", "pytest-cov", "ruff"]
+ 
+ [project.scripts]
+ aura = "src.aura.cli.main:main"
+@@ -23,3 +32,7 @@ include = ["src", "src.*"]
+ [tool.pytest.ini_options]
+ testpaths = ["tests"]
+ python_files = ["test_*.py"]
++
++[tool.ruff]
++target-version = "py310"
++line-length = 120

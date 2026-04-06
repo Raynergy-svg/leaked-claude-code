@@ -1,0 +1,2 @@
+# Aura has zero required dependencies — runs on Python stdlib alone.
+# Optional: pip install -e ".[ml]" for ML features, or ".[dev]" for dev tools.

@@ -1,0 +1,64 @@
+diff --git a/install.sh b/install.sh
+index 4e8a306..2b496fb 100755
+--- a/install.sh
++++ b/install.sh
+@@ -13,16 +13,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ RED='\033[91m'
+ GREEN='\033[92m'
+ CYAN='\033[96m'
++YELLOW='\033[93m'
+ DIM='\033[2m'
+ BOLD='\033[1m'
+ RESET='\033[0m'
+ 
+ info()  { echo -e "${CYAN}[aura]${RESET} $*"; }
+ ok()    { echo -e "${GREEN}[aura]${RESET} $*"; }
++warn()  { echo -e "${YELLOW}[aura]${RESET} $*"; }
+ err()   { echo -e "${RED}[aura]${RESET} $*" >&2; }
+ 
+ cd "$SCRIPT_DIR"
+ 
++# ── Python version check ──────────────────────────────────────────────
++if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
++    err "Python not found. Aura requires Python 3.10 or later."
++    err "Install Python from https://www.python.org/downloads/"
++    exit 1
++fi
++
++PYTHON_CMD="$(command -v python3 2>/dev/null || command -v python)"
++PYTHON_VERSION="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
++PYTHON_MAJOR="$("$PYTHON_CMD" -c 'import sys; print(sys.version_info.major)')"
++PYTHON_MINOR="$("$PYTHON_CMD" -c 'import sys; print(sys.version_info.minor)')"
++
++if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_MINOR" -lt 10 ]]; }; then
++    err "Python $PYTHON_VERSION found, but Aura requires Python >= 3.10."
++    err "Please upgrade: https://www.python.org/downloads/"
++    exit 1
++fi
++
++info "Using Python $PYTHON_VERSION ($PYTHON_CMD)"
++
+ if [[ "${1:-}" == "--symlink" ]]; then
+     # Option B: symlink the shell wrapper into /usr/local/bin
+     WRAPPER="$SCRIPT_DIR/aura"
+@@ -73,3 +95,20 @@ else
+     err "Try:  export PATH=\"\$(python -m site --user-base)/bin:\$PATH\""
+     exit 1
+ fi
++
++# ── Optional: sidecar setup ───────────────────────────────────────────
++if [[ -d "$SCRIPT_DIR/sidecar" ]]; then
++    echo ""
++    if command -v node &>/dev/null && command -v npm &>/dev/null; then
++        NODE_VERSION="$(node --version)"
++        info "Node.js $NODE_VERSION detected — setting up sidecar..."
++        (cd "$SCRIPT_DIR/sidecar" && npm install --silent && npm run build --silent) 2>&1 | while IFS= read -r line; do
++            echo -e "  ${DIM}${line}${RESET}"
++        done
++        ok "Sidecar built (WebSocket bridge for remote mode)."
++    else
++        warn "Node.js not found — skipping sidecar setup."
++        warn "The sidecar is optional (needed only for --remote / --serve mode)."
++        warn "Install Node.js from https://nodejs.org/ if you need it."
++    fi
++fi

@@ -20,6 +20,7 @@
  *   AURA_AUTH_TOKEN    Optional auth token for WebSocket clients
  */
 
+import { randomUUID } from "node:crypto";
 import { UDSClient } from "./udsClient.js";
 import { WSServer } from "./wsServer.js";
 import type { AuraMessage } from "./types.js";
@@ -83,7 +84,18 @@ function main(): void {
     socketPath: config.udsPath,
     onMessage: (msg: AuraMessage) => {
       // Forward Python → remote clients
-      wsServer.broadcast(msg);
+      // If the message includes a client_id, route only to that client;
+      // otherwise broadcast to all (backward compatible).
+      const clientId =
+        msg.data && typeof msg.data === "object"
+          ? (msg.data as Record<string, unknown>).client_id
+          : undefined;
+
+      if (typeof clientId === "string" && clientId) {
+        wsServer.sendTo(clientId, msg);
+      } else {
+        wsServer.broadcast(msg);
+      }
     },
     onConnect: () => {
       pythonConnected = true;
@@ -102,13 +114,18 @@ function main(): void {
     authToken: config.authToken || undefined,
     onClientMessage: (msg: AuraMessage, clientId: string) => {
       // Forward remote client → Python
+      // Inject client_id into msg.data so Python can route to the correct session
       if (!uds.isConnected()) {
         console.log(
           `[Bridge] Dropping message from ${clientId}: Python not connected`
         );
         return;
       }
-      uds.write(msg);
+      const enriched: AuraMessage = {
+        ...msg,
+        data: { ...msg.data, client_id: clientId },
+      };
+      uds.write(enriched);
     },
     onClientConnect: (clientId: string) => {
       console.log(
@@ -119,6 +136,16 @@ function main(): void {
       console.log(
         `[Bridge] Remote client ${clientId} disconnected (total: ${wsServer.clientCount})`
       );
+      // Notify Python so it can tear down the session
+      if (uds.isConnected()) {
+        const disconnectMsg: AuraMessage = {
+          id: randomUUID(),
+          type: "control_request",
+          timestamp: new Date().toISOString(),
+          data: { subtype: "disconnect", client_id: clientId },
+        };
+        uds.write(disconnectMsg);
+      }
     },
   });
 

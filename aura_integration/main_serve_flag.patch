@@ -1,0 +1,52 @@
+diff --git a/src/aura/cli/main.py b/src/aura/cli/main.py
+index 9e1f2b7..be5d490 100644
+--- a/src/aura/cli/main.py
++++ b/src/aura/cli/main.py
+@@ -132,6 +132,10 @@ def main():
+                         help="WebSocket port for remote connections (default: 8765)")
+     parser.add_argument("--auth-token", type=str, default=None,
+                         help="Auth token for remote WebSocket connections")
++    parser.add_argument("--serve", action="store_true",
++                        help="Run as headless multi-session server (no CLI, WebSocket only)")
++    parser.add_argument("--max-sessions", type=int, default=10,
++                        help="Maximum concurrent sessions in --serve mode (default: 10)")
+     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+     args = parser.parse_args()
+ 
+@@ -212,6 +216,36 @@ def main():
+             logger.warning(f"Remote transport failed to start: {e}")
+             brand.print_dim(f"Remote transport unavailable: {e}")
+ 
++    # Headless multi-session server mode (--serve)
++    if args.serve:
++        from src.aura.transport.session_manager import RemoteSessionManager
++
++        db_dir = (db_path.parent if db_path else Path(".aura")) / "sessions"
++        bridge = bridge_dir or Path(".aura/bridge")
++
++        session_manager = RemoteSessionManager(
++            db_dir=db_dir,
++            bridge_dir=bridge,
++            max_sessions=args.max_sessions,
++        )
++
++        logger.info(
++            "Starting Aura in multi-session server mode "
++            "(WS port: %d, max sessions: %d)",
++            args.ws_port,
++            args.max_sessions,
++        )
++        print(f"Aura multi-session server starting on port {args.ws_port}...")
++        print(f"  Max sessions: {args.max_sessions}")
++        print("  Press Ctrl+C to stop.")
++
++        session_manager.serve(
++            socket_path="/tmp/aura-sidecar.sock",
++            ws_port=args.ws_port,
++            auth_token=args.auth_token,
++        )
++        return
++
+     if args.status:
+         # Fix M-02: Previously no try/except — a corrupted bridge file caused an unhandled crash.
+         import json
